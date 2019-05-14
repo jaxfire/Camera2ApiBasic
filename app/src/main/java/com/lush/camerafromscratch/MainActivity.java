@@ -6,14 +6,23 @@ import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.params.StreamConfigurationMap;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.util.Log;
+import android.util.Size;
 import android.util.SparseIntArray;
 import android.view.Surface;
 import android.view.TextureView;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -70,12 +79,26 @@ public class MainActivity extends AppCompatActivity {
     private HandlerThread mBackgroundHandlerThread;
     private Handler mBackgroundHandler;
     private String mCameraId;
+    private Size mPreviewSize;
     private static SparseIntArray ORIENTATIONS = new SparseIntArray();
     static {
         ORIENTATIONS.append(Surface.ROTATION_0, 0);
         ORIENTATIONS.append(Surface.ROTATION_90, 90);
         ORIENTATIONS.append(Surface.ROTATION_180, 180);
         ORIENTATIONS.append(Surface.ROTATION_270, 270);
+    }
+
+    private static class CompareSizeByArea implements Comparator<Size> {
+
+        @Override
+        public int compare(Size o1, Size o2) {
+            // signum = The return value is -1 if the specified value is negative; 0 if the specified
+            // value is zero; and 1 if the specified value is positive.)
+
+            Log.d("jim", "Compare value: " + Long.signum((long) o1.getWidth() * o1.getHeight() / (long) o2.getWidth() * o2.getHeight()));
+
+            return Long.signum((long) o1.getWidth() * o1.getHeight() / (long) o2.getWidth() * o2.getHeight());
+        }
     }
 
     @Override
@@ -143,6 +166,10 @@ public class MainActivity extends AppCompatActivity {
                     continue;
                 }
 
+                // The SCALER_STREAM_CONFIGURATION_MAP contains all the lists of the various resolutions
+                // for camera preview, camera, video, raw camera etc.
+                StreamConfigurationMap map =  cameraCharacteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+
                 // Work out if we're in portrait mode or not. If we're in portrait mode we need to
                 // swap the width and height values provided by our TextureView.
 
@@ -158,6 +185,10 @@ public class MainActivity extends AppCompatActivity {
                 int rotatedWidth = width;
                 int rotatedHeight = height;
 
+                // All the previews from the Camera are in landscape but our TextureView is in portrait
+                // (when the device is orientated to portrait) so for them to work with each other's values
+                // we need to swap our dimensions
+
                 if (swapRotation) {
                     rotatedWidth = height;
                     rotatedHeight = width;
@@ -165,6 +196,15 @@ public class MainActivity extends AppCompatActivity {
 
                 Log.d("jim", "rotatedWidth: " + rotatedWidth);
                 Log.d("jim", "rotatedHeight: " + rotatedHeight);
+
+                // Set up preview display size. Use map (passing in SurfaceTexture) to get a list of
+                // all of the preview resolutions available.
+                mPreviewSize = chooseOptimalSize(map.getOutputSizes(SurfaceTexture.class), rotatedWidth, rotatedHeight);
+
+                Log.d("jim", "Chosen preview size: " + mPreviewSize.getWidth() + ":" + mPreviewSize.getHeight());
+
+                // So the sensor supports multiple preview resolutions and we just found the closest
+                // matching preview resolution to our TextureView.
 
                 // If it's not front facing then it has to be back facing (which is what we want)
                 mCameraId = cameraId;
@@ -213,5 +253,51 @@ public class MainActivity extends AppCompatActivity {
 
         Log.d("jim", "sensorToDeviceRotation - return value: " + (sensorOrientation + deviceOrientation) % 360);
         return (sensorOrientation + deviceOrientation) % 360;
+    }
+
+    private static Size chooseOptimalSize(Size[] choices, int width, int height) {
+
+        // TODO: This logic seems flawed. If no perfect aspect ratio match is found then get the
+        // closest aspect ratio match? See how the Google sample app does this.
+
+        // Is the resolution from the sensor big enough for our display?
+        Set<Size> aspectRationMatchAndBigEnough = new HashSet<>();
+        Set<Size> bigEnough = new HashSet<>();
+
+        // Traverse through the list of preview resolutions supplied by the sensor.
+        for (Size option : choices) {
+            Log.d("jim", "option: " + option.getWidth() + ":" + option.getHeight());
+
+            // Aspect ratio check. Do they have equivalent aspect ratios. e.g. 16:9 == 160:90.
+            if (option.getHeight() == option.getWidth() * height / width) {
+
+                // Width/Height check. Are the width and height of this preview option greater than
+                // or equal to the width and height of our display?
+                if (option.getWidth() >= width && option.getHeight() >= height) {
+                    aspectRationMatchAndBigEnough.add(option);
+                }
+            } else {
+                // Width/Height check. Are the width and height of this preview option greater than
+                // or equal to the width and height of our display?
+                if (option.getWidth() >= width && option.getHeight() >= height) {
+                    bigEnough.add(option);
+                }
+            }
+        }
+
+        if (aspectRationMatchAndBigEnough.size() > 0) {
+            Log.d("jim", "Aspect ratio match found and big enough");
+            // Find the minimum size we can use from the list of possible options.
+            return Collections.min(aspectRationMatchAndBigEnough, new CompareSizeByArea());
+        } else if (bigEnough.size() > 0){
+            Log.d("jim", "No aspect ratio match found but big enough");
+            // Find the minimum size from the options which don't match our TextureViews aspect ration.
+            return Collections.min(bigEnough, new CompareSizeByArea());
+        } else {
+            Log.d("jim", "No aspect ration match found and non that are big enough");
+            // If non are big enough then return the first from the choices array... better than nothing
+            // but this could be improved. The largest from the choices array would be an improvement.
+            return choices[0];
+        }
     }
 }
